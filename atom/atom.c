@@ -196,8 +196,8 @@ int Atom_length(const char* str) {
 
     assert(str);
     for (i = 0; i < NELEMS(buckets); i++) {
-        for (p = buckets[i]; p->link != NULL ;p = p->link ) {
-            if (p->data == str) {
+        for (p = buckets[i]; p; p = p->link ) {
+            if (strncmp(p->data, str, p->len)) {
                 return p->len;
             }
         }
