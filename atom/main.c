@@ -4,10 +4,10 @@
 
 
 int main (void) {
-    int i = 77889;
-    Atom_int(i);
+    Atom_int(7789);
     Atom_string("chris");
-    Atom_string("strong");
+    Atom_string("123-456");
+    Atom_int(98765);
 
     return 0;
 }

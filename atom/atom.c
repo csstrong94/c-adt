@@ -184,4 +184,26 @@ const char* Atom_new(const char *str, uint32_t len) {
         
     }
 
+/**
+ * first we create an atom to be used as a pointer
+ * we need to interate through the array, and then iterate
+ * through the linked list chain of a populated bucket
+ */
+
+int Atom_length(const char* str) {
+    struct atom* p;
+    int i;
+
+    assert(str);
+    for (i = 0; i < NELEMS(buckets); i++) {
+        for (p = buckets[i]; p->link != NULL ;p = p->link ) {
+            if (p->data == str) {
+                return p->len;
+            }
+        }
+    }
+
+    assert(0);
+    return 0;
+}
 
