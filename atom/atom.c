@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -6,7 +7,7 @@
 #include "assert.h"
 
 #define __MAX_DIGITS__      43
-#define TABLE_SIZE          2048
+#define TABLE_SIZE          2039
 #define SCATTER_LEN         256
 #define NELEMS(x)           ((sizeof(x))/(sizeof(x[0])))
 
@@ -19,14 +20,20 @@
  * struct size: 24 bytes with x86-64 arch
  */
 static struct atom {
-    struct atom* link; //* 8 bytes
-    int len;           //* 4 bytes, 4 bytes padding
-    char* data;        //* 8 bytes
+    struct atom* link;      //* 8 bytes
+    int len;                //* 4 bytes, 4 bytes padding
+    char* data;             //* 8 bytes
+    unsigned long raw_hash;     //* 8 bytes
     
 
-} *buckets[2048];
+} *buckets[TABLE_SIZE];
 
+static struct dist {
+    int elem;
+    int num_occurrences;
+} results[TABLE_SIZE];
 
+/*
 static unsigned long scatter[] = {
     1804289383, 846930886, 1681692777, 1714636915, 1957747793, 424238335, 719885386, 1649760492, 
     596516649, 1189641421, 1025202362, 1350490027, 783368690, 1102520059, 2044897763, 1967513926, 
@@ -61,7 +68,54 @@ static unsigned long scatter[] = {
      1450573622, 1037127828, 1034949299, 654887343, 1529195746, 392035568, 1335354340, 87755422, 
      889023311, 1494613810, 1447267605, 1369321801, 745425661, 396473730, 1308044878, 1346811305
 };
+*/
 
+/**
+ * 
+ * Instrumentation code below
+ * 
+ */
+
+static int cmpstruct(const void* a , const void* b) {
+    const struct dist* k = (struct dist*) a;
+    const struct dist* j = (struct dist*) b;
+    return k->num_occurrences > j->num_occurrences;
+}
+
+void display_dist() {
+    struct atom* p;
+    struct dist d;
+    int i, count;
+
+    for (i = 0; i < TABLE_SIZE; i++) {
+        for (count = 0, p = buckets[i]; p; p = p->link) {
+            count++;
+        }
+        d.elem = i;
+        d.num_occurrences = count;
+        results[i] = d;
+    }
+
+    qsort(&results, TABLE_SIZE, sizeof(d), cmpstruct);
+    printf("Distrubtion sorted:\n");
+    for (int j = 0; j < TABLE_SIZE; j++) {
+        printf("%d:%d\n", results[j].elem, results[j].num_occurrences);
+    }
+}
+
+
+/**
+ * djb2 hashing algorithm
+ */
+static unsigned long djb2(const char* str) {
+    unsigned long hash = 5381;
+    int c;
+
+    while (c = *str++)
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+    return hash;
+}
 
 const char* Atom_string(const char* str) {
     assert(str);
@@ -79,6 +133,7 @@ const char* Atom_int(long n) {
     char* s = str + sizeof str;
     unsigned long m;
 
+
     /*
      * first we check to see if n is the min val 
      * for type long. if it is, take the absolute value
@@ -90,7 +145,7 @@ const char* Atom_int(long n) {
     }
 
     // negate if necessary
-    if (n < 0) {
+    else if (n < 0) {
         m = -n;
     }
 
@@ -118,28 +173,30 @@ const char* Atom_int(long n) {
 }
 
 /**
- * Create our atoms here. 
+ * Create our atoms here. We use the djb2 hashing algorithm
  * TODO: switch from malloc to _ALLOC macro in mem.h
  * 
  */
 const char* Atom_new(const char *str, uint32_t len) {
-    unsigned long hash;
+    unsigned long hash, bounded_hash;
     int i;
     struct atom* p;
 
     assert(str);
     assert(len >= 0);
     
-    for (hash = 0, i = 0; i < len; i++) {
-        hash = (hash << 1) + scatter[(unsigned char)str[i]];
-    }
-    // normalize hash to fit within array bounds
-    hash %= NELEMS(buckets);
+    hash = djb2(str);
 
-    for (p = buckets[hash]; p; p = p->link) {
+    // for (hash = 0, i = 0; i < len; i++) {
+    //     hash = (hash << 1) + scatter[(unsigned char)str[i]];
+    // }
+    // normalize hash to fit within array bounds
+    bounded_hash = hash % NELEMS(buckets);
+
+    for (p = buckets[bounded_hash]; p; p = p->link) {
         // check to see if we have a duplicate in the array, 
         // if so  just return existing member
-        if (len == p->len) {
+        if (len == p->len && p->raw_hash == hash) {
             for (i = 0; i < len && p->data[i] == str[i]; ) {
                 i++;
             }
@@ -168,17 +225,18 @@ const char* Atom_new(const char *str, uint32_t len) {
             memcpy(p->data, str, len);
         }
         p->data[len] = '\0';
+        p->raw_hash = hash;
 
         /**
          * set the new atom equal to the first element that buckets[h]
          * points to
          */
-        p->link = buckets[hash]; 
+        p->link = buckets[bounded_hash]; 
 
         /**
          * Now insert the atom into the beginning of the linked-list
          */ 
-        buckets[hash] = p;
+        buckets[bounded_hash] = p;
                             
         return p->data;
         
@@ -188,22 +246,39 @@ const char* Atom_new(const char *str, uint32_t len) {
  * first we create an atom to be used as a pointer
  * we need to interate through the array, and then iterate
  * through the linked list chain of a populated bucket
+ * 
+ * we can improve this by hashing the input string and
+ * accessing the appropriate bucket rather than looping 
+ * in O(N^2) time
  */
 
 int Atom_length(const char* str) {
     struct atom* p;
-    int i;
+    int i, len;
+    unsigned long hash;
 
     assert(str);
-    for (i = 0; i < NELEMS(buckets); i++) {
-        for (p = buckets[i]; p; p = p->link ) {
-            if (strncmp(p->data, str, p->len)) {
+    
+    hash = djb2(str);
+
+    // for (hash = 0, i = 0; i < len; i++) {
+    //     hash = (hash << 1) + scatter[(unsigned char)str[i]];
+    // }
+    hash %= NELEMS(buckets);
+
+    
+    if (buckets[hash]) {
+        for (p = buckets[hash]; p; p = p->link ) {
+            //TODO: make string compare work using memory addresses
+            if (p->data == str) {
                 return p->len;
             }
         }
     }
+    
 
     assert(0);
     return 0;
 }
+
 
